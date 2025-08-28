@@ -168,7 +168,7 @@ http {
         include /etc/nginx/options-ssl-nginx.conf;
         ssl_dhparam /etc/nginx/ssl-dhparams.pem;
 
-        location / {
+        location {{ service.service_path|default('/') }} {
             resolver 127.0.0.11;
             set $virtual_proto {{ service.virtual_proto }};
             proxy_pass $virtual_proto://upstream-https-{{ service['virtual_host'] }};
@@ -187,7 +187,7 @@ http {
         
         charset utf-8;
         
-        location / {
+        location {{ service.service_path|default('/') }} {
             resolver 127.0.0.11;
             set $virtual_proto {{ service.virtual_proto }};
             proxy_pass $virtual_proto://upstream-{{ service['virtual_host'] }};

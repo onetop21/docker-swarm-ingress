@@ -110,6 +110,7 @@ By default a request would be redirected to `http://service-name:80/`.
 | `ingress.port` | `no`  | `80`    | The port which serves the service in the cluster. |
 | `ingress.virtual_proto` | `no`  | `http`     | The protocol used to connect to the backends |
 | `ingress.certificate_name` | `no`  | ``     | Custom name of ssl certificate used instead of domain name |
+| `ingress.path` | `no`  | `/`    | **New** The path which serves the service in the cluster. |
 
 
 ### Run a Service with Enabled Ingress

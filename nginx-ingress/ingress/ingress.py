@@ -76,6 +76,7 @@ while True:
         service_port = 80
         service_name = ''
         service_id = service.get('ID','')
+        service_path = '/'
 
         # issue 15
         certificate_name = None
@@ -87,6 +88,7 @@ while True:
                 alt_virtual_host = service['Spec']['Labels'].get('ingress.alt_host','')
                 service_port = service['Spec']['Labels'].get('ingress.port', 80)
                 service_name =  service['Spec'].get('Name')
+                service_path = service['Spec']['Labels'].get('ingress.path', '/')
 
             if service['Spec']['Labels'].get('ingress.ssl') and service['Spec']['Labels'].get('ingress.ssl_redirect'):
                 https_config = True
@@ -111,7 +113,8 @@ while True:
             'service_port': service_port,
             'service_name': service_name,
             'service_id': service_id,
-            'certificate_name': certificate_name
+            'certificate_name': certificate_name,
+            'service_path': service_path
         }
 
         services_list.append(out)
