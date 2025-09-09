@@ -130,26 +130,73 @@ http {
     }
     {% endif %}
 
-    {% for service in services -%}
-    {% if service['https_redirect'] -%}
+    # Define upstreams for all service backends (HTTP and HTTPS)
+    {% for up in upstreams -%}
+    upstream {{ up.name }} {
+        server {{ up.target }};
+    }
+    {% endfor %}
+
+    # Per-host servers with multiple path locations
+    {% for h in hosts -%}
+    {% set alt = h.alt_host %}
+
+    # HTTP server for {{ h.host }}
+    {% if h.has_http or (h.redirect_locations | length > 0) -%}
     server {
         listen 80;
-        server_name {{ service['virtual_host']  }};
+        server_name {{ h.host }}{% if alt %} {{ alt }}{% endif %};
+        charset utf-8;
 
+        # Redirect-only paths
+        {% for r in h.redirect_locations -%}
+        {% if r.path_prefix != '/' -%}
+        location = {{ r.path_exact }} {
+            return 301 https://$host{{ r.path_prefix }};
+        }
+        location ^~ {{ r.path_prefix }} {
+            return 301 https://$host$request_uri;
+        }
+        {% else %}
+        # root path redirect is full-site redirect
         location / {
             return 301 https://$host$request_uri;
         }
-    }
+        {% endif -%}
+        {% endfor %}
+
+        # Proxied HTTP paths
+        {% for e in h.http_locations -%}
+        {% if e.path_prefix != '/' -%}
+        # normalize no-trailing-slash to trailing-slash
+        location = {{ e.path_exact }} {
+            return 301 $scheme://$host{{ e.path_prefix }};
+        }
+        location ^~ {{ e.path_prefix }} {
+            {% if e.virtual_proto == 'https' -%}
+            proxy_pass https://{{ e.upstream }}/;
+            {% else -%}
+            proxy_pass http://{{ e.upstream }}/;
+            {% endif -%}
+        }
+        {% else %}
+        # root mapping for this host
+        location / {
+            {% if e.virtual_proto == 'https' -%}
+            proxy_pass https://{{ e.upstream }};
+            {% else -%}
+            proxy_pass http://{{ e.upstream }};
+            {% endif -%}
+        }
+        {% endif -%}
+        {% endfor %}
+     }
     {% endif -%}
-    {% if service['https_config'] and proxy_mode not in ['ssl-passthrough'] -%}
 
-    # {{ service['virtual_host']  }} - {{  service['id'] }} - HTTPS ssl-termination/ssl-bridging
-    upstream upstream-https-{{ service['virtual_host'] }} {
-        server {{ service['service_name'] }}:{{ service['service_port']|default('80') }};
-    }
-
-    server {
-        server_name {{ service['virtual_host'] }};
+    # HTTPS server for {{ h.host }} (termination/bridging)
+    {% if h.has_https and proxy_mode not in ['ssl-passthrough'] -%}
+     server {
+        server_name {{ h.host }}{% if alt %} {{ alt }}{% endif %};
         listen 443 ssl http2 ;
         
         add_header X-Frame-Options "SAMEORIGIN";
@@ -158,39 +205,40 @@ http {
         charset utf-8;
 
         # SSL Settings
-        {% if service.certificate_name -%}
-        ssl_certificate /run/secrets/{{ service['certificate_name'] }}.crt;
-        ssl_certificate_key /run/secrets/{{ service['certificate_name'] }}.key;
+        {% if h.certificate_name -%}
+        ssl_certificate /run/secrets/{{ h.certificate_name }}.crt;
+        ssl_certificate_key /run/secrets/{{ h.certificate_name }}.key;
         {% else %}
-        ssl_certificate /run/secrets/{{ service['virtual_host'] }}.crt;
-        ssl_certificate_key /run/secrets/{{ service['virtual_host'] }}.key;
+        ssl_certificate /run/secrets/{{ h.host }}.crt;
+        ssl_certificate_key /run/secrets/{{ h.host }}.key;
         {% endif %}
         include /etc/nginx/options-ssl-nginx.conf;
         ssl_dhparam /etc/nginx/ssl-dhparams.pem;
 
-        location {{ service.service_path|default('/') }} {
-            resolver 127.0.0.11;
-            set $virtual_proto {{ service.virtual_proto }};
-            proxy_pass $virtual_proto://upstream-https-{{ service['virtual_host'] }};
+        {% for e in h.https_locations -%}
+        {% if e.path_prefix != '/' -%}
+        # normalize no-trailing-slash to trailing-slash
+        location = {{ e.path_exact }} {
+            return 301 $scheme://$host{{ e.path_prefix }};
         }
-    }
-    {% elif service['http_config'] and not service['https_redirect'] -%}
-
-    # {{ service['virtual_host'] }} - {{ service['service_id'] }} - HTTP
-    upstream upstream-{{ service['virtual_host'] }} {
-        server {{ service['service_name'] }}:{{ service['service_port']|default('80') }};
-    }
-
-    server {
-        server_name {{ service['virtual_host'] }};
-        listen 80 ;
-        
-        charset utf-8;
-        
-        location {{ service.service_path|default('/') }} {
-            resolver 127.0.0.11;
-            set $virtual_proto {{ service.virtual_proto }};
-            proxy_pass $virtual_proto://upstream-{{ service['virtual_host'] }};
+        location ^~ {{ e.path_prefix }} {
+            {% if e.virtual_proto == 'https' -%}
+            proxy_pass https://{{ e.upstream }}/;
+            {% else -%}
+            proxy_pass http://{{ e.upstream }}/;
+            {% endif -%}
+         }
+        {% else %}
+        # root mapping for this host
+        location / {
+            {% if e.virtual_proto == 'https' -%}
+            proxy_pass https://{{ e.upstream }};
+            {% else -%}
+            proxy_pass http://{{ e.upstream }};
+            {% endif -%}
+        }
+        {% endif -%}
+        {% endfor %}
         }
     }
     {% endif -%}

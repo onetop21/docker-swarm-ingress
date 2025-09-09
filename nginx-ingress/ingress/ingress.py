@@ -4,6 +4,7 @@ from jinja2 import Template
 import os, socket
 import subprocess
 import time
+from collections import defaultdict
 
 def wait_for_dns_service(services):
     for service in services:
@@ -118,12 +119,88 @@ while True:
         }
 
         services_list.append(out)
-    
+
+    # Group services by host so we can generate a single server block per host
+    hosts = {}
+    for s in services_list:
+        if not s['virtual_host']:
+            continue
+        host = s['virtual_host']
+        group = hosts.get(host)
+        if not group:
+            group = {
+                'host': host,
+                'alt_host': s.get('alt_virtual_host', ''),
+                'http_locations': [],
+                'redirect_locations': [],
+                'https_locations': [],
+                'has_http': False,
+                'has_https': False,
+                'certificate_name': None,
+            }
+            hosts[host] = group
+
+        # Choose a certificate name for the host if provided by any service
+        if not group['certificate_name'] and s.get('certificate_name'):
+            group['certificate_name'] = s.get('certificate_name')
+        # Propagate alt host if later services define it
+        if not group.get('alt_host') and s.get('alt_virtual_host'):
+            group['alt_host'] = s.get('alt_virtual_host')
+
+        # Normalize path
+        raw_path = s.get('service_path') or '/'
+        if not raw_path.startswith('/'):
+            raw_path = '/' + raw_path
+        # Calculate exact and prefix variants
+        if raw_path == '/':
+            path_exact = '/'
+            path_prefix = '/'
+        else:
+            path_exact = raw_path.rstrip('/')
+            path_prefix = path_exact + '/'
+        # record locations
+        upstream_name = f"upstream-{host.replace('.', '_')}-{s['service_id']}"
+
+        entry = {
+            'path_exact': path_exact,
+            'path_prefix': path_prefix,
+            'virtual_proto': s.get('virtual_proto', 'http'),
+            'service_port': s.get('service_port', 80),
+            'service_name': s.get('service_name'),
+            'service_id': s.get('service_id'),
+            'upstream': upstream_name,
+        }
+
+        if s['https_config'] and os.environ['PROXY_MODE'] != 'ssl-passthrough':
+            group['https_locations'].append(entry)
+            group['has_https'] = True
+
+        if s['http_config']:
+            if s['https_redirect']:
+                group['redirect_locations'].append({'path_exact': path_exact, 'path_prefix': path_prefix})
+            else:
+                group['http_locations'].append(entry)
+                group['has_http'] = True
+
+    # Sort locations by descending path length for proper prefix matching
+    for g in hosts.values():
+        g['http_locations'] = sorted(g['http_locations'], key=lambda e: len(e['path_prefix']), reverse=True)
+        g['redirect_locations'] = sorted(g['redirect_locations'], key=lambda e: len(e['path_prefix']), reverse=True)
+        g['https_locations'] = sorted(g['https_locations'], key=lambda e: len(e['path_prefix']), reverse=True)
+
+    # Collect all upstreams to define
+    upstreams = []
+    for g in hosts.values():
+        for e in g['http_locations'] + g['https_locations']:
+            upstreams.append({'name': e['upstream'], 'target': f"{e['service_name']}:{e['service_port']}"})
+    # Render configuration
     new_nginx_config = Template(nginx_config_template).render(
-        services = services_list,
-        request_id = os.environ['USE_REQUEST_ID'] in ['true', 'yes', '1'],
-        proxy_mode = os.environ['PROXY_MODE'], # 'ssl-passthrough, ssl-termination, ssl-bridging
-        log_pattern = resolve_pattern(os.environ['LOG_FORMAT'])
+        services=services_list,
+        hosts=list(hosts.values()),
+        upstreams=upstreams,
+        request_id=os.environ['USE_REQUEST_ID'] in ['true', 'yes', '1'],
+        proxy_mode=os.environ['PROXY_MODE'],  # 'ssl-passthrough, ssl-termination, ssl-bridging
+        log_pattern=resolve_pattern(os.environ['LOG_FORMAT'])
     )
 
     if current_nginx_config != new_nginx_config:
